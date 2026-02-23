@@ -1,0 +1,4 @@
+node_modules
+.next
+tracker.db
+npm-debug.log*
