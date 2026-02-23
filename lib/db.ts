@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   period TEXT NOT NULL CHECK (period IN ('day', 'week')),
   targetCount INTEGER NOT NULL DEFAULT 1,
   active INTEGER NOT NULL DEFAULT 1,
+  sortOrder INTEGER NOT NULL DEFAULT 0,
+  scheduledDate TEXT,
   createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -54,12 +56,25 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT OR IGNORE INTO settings(key, value) VALUES ('targetCalories', '1800');
 `);
 
+const columns = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
+const names = new Set(columns.map((col) => col.name));
+if (!names.has('sortOrder')) db.exec('ALTER TABLE tasks ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0');
+if (!names.has('scheduledDate')) db.exec('ALTER TABLE tasks ADD COLUMN scheduledDate TEXT');
+
+db.exec(`
+UPDATE tasks
+SET sortOrder = id
+WHERE sortOrder = 0;
+`);
+
 export type Task = {
   id: number;
   title: string;
   period: 'day' | 'week';
   targetCount: number;
   active: 1 | 0;
+  sortOrder: number;
+  scheduledDate: string | null;
 };
 
 export function hasUser() {

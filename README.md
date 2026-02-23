@@ -4,10 +4,11 @@ A full-stack Next.js app for personal productivity tracking on localhost.
 
 ## Features
 - Single-user local authentication (bcrypt hashed password in SQLite)
-- Daily + custom-frequency task/habit tracking
-- Quick unscheduled completion logging
-- Daily completion progress + weekly trend chart
-- Calorie tracking + weight tracking with trend charts
+- Daily + custom-frequency recurring task/habit tracking
+- One-time tasks for **today** or **tomorrow** (day-specific only)
+- Drag-and-drop task reordering with persistent order
+- Daily completion progress + weekly trend **line** chart
+- Calorie tracking + weight tracking with **line** charts
 - Weekly calorie deficit/surplus analysis with feedback
 - Minimal daily diary with date-based editing
 - Settings for editable daily calorie target

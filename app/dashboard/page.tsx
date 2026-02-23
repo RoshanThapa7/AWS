@@ -1,5 +1,5 @@
 import { AppShell } from '@/components/app-shell';
-import { TrendBar } from '@/components/charts';
+import { TrendLine } from '@/components/charts';
 import { requireAuth } from '@/lib/auth';
 import { db, Task } from '@/lib/db';
 import { dateKey } from '@/lib/date';
@@ -8,7 +8,9 @@ import { eachDayOfInterval, format, subDays } from 'date-fns';
 export default async function DashboardPage() {
   await requireAuth();
 
-  const tasks = db.prepare("SELECT * FROM tasks WHERE period='day' AND active = 1").all() as Task[];
+  const tasks = db
+    .prepare("SELECT * FROM tasks WHERE period='day' AND active = 1 AND (scheduledDate IS NULL OR scheduledDate = ?) ORDER BY sortOrder ASC, createdAt ASC")
+    .all(dateKey()) as Task[];
   const expected = tasks.reduce((sum, t) => sum + t.targetCount, 0);
   const todayDoneRow = db
     .prepare("SELECT COUNT(*) as count FROM completions c JOIN tasks t ON c.taskId = t.id WHERE c.date = ? AND t.period='day'")
@@ -19,10 +21,13 @@ export default async function DashboardPage() {
   const days = eachDayOfInterval({ start: subDays(new Date(), 6), end: new Date() });
   const trend = days.map((day) => {
     const key = format(day, 'yyyy-MM-dd');
+    const expectedRow = db
+      .prepare("SELECT COALESCE(SUM(targetCount),0) as expected FROM tasks WHERE period='day' AND active = 1 AND (scheduledDate IS NULL OR scheduledDate = ?)")
+      .get(key) as { expected: number };
     const dayDone = db
       .prepare("SELECT COUNT(*) as count FROM completions c JOIN tasks t ON c.taskId = t.id WHERE c.date = ? AND t.period='day'")
       .get(key) as { count: number };
-    const value = expected ? Math.min(100, Math.round((dayDone.count / expected) * 100)) : 0;
+    const value = expectedRow.expected ? Math.min(100, Math.round((dayDone.count / expectedRow.expected) * 100)) : 0;
     return { date: format(day, 'MM/dd'), completion: value };
   });
 
@@ -39,7 +44,18 @@ export default async function DashboardPage() {
 
       <div className="bg-card rounded-2xl p-5">
         <h2 className="font-semibold mb-2">Weekly performance trend</h2>
-        <TrendBar data={trend} dataKey="completion" />
+        <TrendLine data={trend} dataKey="completion" color="#60a5fa" />
+      </div>
+
+      <div className="bg-card rounded-2xl p-5">
+        <h2 className="font-semibold mb-3">Today’s tasks (custom order)</h2>
+        <div className="space-y-2">
+          {tasks.map((task) => (
+            <div key={task.id} className="bg-slate-900/40 rounded-lg px-3 py-2 text-sm">
+              {task.title}
+            </div>
+          ))}
+        </div>
       </div>
     </AppShell>
   );
