@@ -30,3 +30,7 @@ Then open http://localhost:3000
 ## Notes
 - Database file is created locally as `tracker.db`.
 - Session signing uses `SESSION_SECRET`; defaults to a local dev secret if not set.
+
+
+## Architecture
+- See `docs/architecture.md` for full system architecture and data flow details.
