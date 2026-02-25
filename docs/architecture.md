@@ -1,177 +1,145 @@
-# System Architecture — Local-Only Productivity Web App
+# System Architecture — AWS Cloud Deployment (Production)
 
-This document defines the architecture for the current local-only productivity platform built with Next.js + Tailwind + SQLite.
+This document defines the **cloud architecture on AWS** for deploying this productivity app publicly (not localhost), while preserving current product behavior.
 
-## 1) Architecture Goals
-
-- **Local-first**: app runs entirely on `localhost` with no cloud dependencies.
-- **Single-user**: one account model, optimized for personal laptop usage.
-- **Fast UX**: minimal server round-trips, low-latency local SQLite access.
-- **Simple operations**: install + run with `npm install` and `npm run dev`.
-- **Extensible**: clear module boundaries for tasks, calories/weight, diary, and settings.
+> Current codebase is local-first and uses SQLite + in-process Next.js runtime. Cloud deployment requires infrastructure and persistence changes for reliability and scale.
 
 ---
 
-## 2) High-Level Architecture
+## 1) Architecture Objectives
+
+- Host app securely over HTTPS on the public internet.
+- Keep UX fast globally with edge caching and compressed assets.
+- Replace local `tracker.db` file with managed cloud database.
+- Make app resilient across restarts/deployments and AZ failures.
+- Use managed AWS services for security, secrets, observability, and backups.
+- Keep architecture simple enough for small personal use, but production-ready.
+
+---
+
+## 2) High-Level AWS Architecture
 
 ```mermaid
-flowchart LR
-  U[User Browser\nNext.js Client Components] --> RSC[Next.js App Router\nServer Components]
-  U --> API[Next.js Route Handlers\n/app/api/*]
+flowchart TB
+  User[User Browser] --> DNS[Route 53 DNS]
+  DNS --> CF[CloudFront CDN + WAF + ACM TLS]
+  CF --> ALB[Application Load Balancer]
 
-  RSC --> DB[(SQLite: tracker.db)]
-  API --> AUTH[Auth Module\nlib/auth.ts]
-  API --> DB
-  RSC --> AUTH
+  ALB --> ECS1[ECS Fargate Task: Next.js App]
+  ALB --> ECS2[ECS Fargate Task: Next.js App]
 
-  DB --> T1[tasks + completions]
-  DB --> T2[calorie_entries + weight_entries]
-  DB --> T3[diary_entries]
-  DB --> T4[users + settings]
+  ECS1 --> RDS[(RDS PostgreSQL)]
+  ECS2 --> RDS
+
+  ECS1 --> S3[S3: optional static/media backups]
+  ECS2 --> S3
+
+  ECS1 --> SM[Secrets Manager / SSM Params]
+  ECS2 --> SM
+
+  ECS1 --> CW[CloudWatch Logs/Metrics/Alarms]
+  ECS2 --> CW
+
+  RDS --> BAK[RDS Automated Backups + PITR]
 ```
 
-### Core Layers
+---
 
-1. **Presentation Layer**
-   - Next.js pages and reusable React components.
-   - Tailwind-based responsive UI with sidebar + content layout.
+## 3) Network & Security Boundary Design
 
-2. **Application Layer**
-   - Server-rendered page loaders (`app/*/page.tsx`) aggregate data for each view.
-   - Route handlers (`app/api/*/route.ts`) mutate state.
-   - Business rules: recurring tasks, one-time tasks, completion counting, weekly calorie analysis.
+### VPC Layout
+- **VPC across 2+ Availability Zones**.
+- **Public subnets**:
+  - ALB only.
+- **Private app subnets**:
+  - ECS Fargate tasks.
+- **Private data subnets**:
+  - RDS PostgreSQL.
 
-3. **Data Layer**
-   - SQLite file (`tracker.db`) via `better-sqlite3`.
-   - Schema evolution handled during app startup (`lib/db.ts`).
+### Security Groups
+- ALB SG: allow inbound `443` from internet; forward only to ECS SG.
+- ECS SG: allow inbound only from ALB SG; outbound to RDS + AWS APIs.
+- RDS SG: allow inbound only from ECS SG on DB port.
+
+### TLS / Edge Security
+- Use **ACM certificate** at CloudFront (and optionally ALB origin TLS).
+- Attach **AWS WAF** (managed rules + rate limits) at CloudFront.
+- Enable security headers (HSTS, X-Content-Type-Options, etc.) in Next.js or CloudFront response policies.
 
 ---
 
-## 3) Module Breakdown
+## 4) Application Runtime Architecture
 
-## A. Authentication (Local Single User)
+### Compute
+- Containerize app with Docker.
+- Deploy as **ECS Fargate service** (minimum 1 task, recommended 2 for HA).
+- ALB target group health checks route only to healthy tasks.
 
-- **Setup flow**: if no user exists, app redirects to `/auth/setup`.
-- **Login flow**: password checked with bcrypt hash.
-- **Session**: signed cookie (`tt_session`) using HMAC SHA-256.
-- **Guards**: protected pages call `requireAuth()`.
+### Scaling
+- Start with fixed small capacity for personal usage.
+- Add autoscaling based on:
+  - CPU/Memory.
+  - ALB request count per target.
 
-**Primary files**
-- `lib/auth.ts`
-- `app/auth/setup/page.tsx`, `app/auth/login/page.tsx`
-- `app/api/auth/setup/route.ts`, `app/api/auth/login/route.ts`, `app/api/auth/logout/route.ts`
-
-## B. Tasks & Habits
-
-### Task types
-- **Recurring task**
-  - `period = day|week`
-  - has `targetCount`
-- **One-time task**
-  - stored in `tasks` with `scheduledDate`
-  - appears only on that exact date (e.g., today/tomorrow)
-
-### Completion model
-- Completions stored in `completions` table per date key.
-- Daily tasks use selected date; weekly tasks use week-start key.
-
-### Reordering
-- Drag-and-drop in client updates visual order.
-- Persisted via `sortOrder` in `tasks` using `PUT /api/tasks`.
-
-**Primary files**
-- `app/tasks/page.tsx`
-- `components/tasks-client.tsx`
-- `app/api/tasks/route.ts`
-- `app/api/completions/route.ts`
-
-## C. Dashboard
-
-- Computes today completion percent for daily tasks.
-- Shows weekly trend as line graph.
-- Shows today’s tasks in custom user-defined order.
-
-**Primary files**
-- `app/dashboard/page.tsx`
-- `components/charts.tsx`
-
-## D. Calories + Weight
-
-- Date-keyed manual entries.
-- Line charts for calorie and weight trends.
-- Weekly summary:
-  - `targetCalories * 7`
-  - compare against last 7 calorie entries
-  - display deficit/surplus and motivational message
-
-**Primary files**
-- `app/calories/page.tsx`
-- `components/calories-client.tsx`
-- `app/api/calories/route.ts`
-- `app/api/weight/route.ts`
-
-## E. Diary
-
-- Date-based entry storage and editing.
-- Distraction-free editor UI.
-
-**Primary files**
-- `app/diary/page.tsx`
-- `components/diary-client.tsx`
-- `app/api/diary/route.ts`
-
-## F. Settings
-
-- `targetCalories` managed in settings table.
-
-**Primary files**
-- `app/settings/page.tsx`
-- `components/settings-client.tsx`
-- `app/api/settings/route.ts`
+### Deployment Strategy
+- CI/CD pipeline (GitHub Actions or CodePipeline) builds image and pushes to ECR.
+- ECS rolling deployments with health checks.
+- Optional blue/green deployments via CodeDeploy for zero-downtime safer releases.
 
 ---
 
-## 4) Data Architecture
+## 5) Data Architecture in Cloud
+
+## Database choice
+- Replace SQLite with **RDS PostgreSQL** (or Aurora PostgreSQL).
+- Keep same logical entities:
+  - `users`
+  - `tasks`
+  - `completions`
+  - `calorie_entries`
+  - `weight_entries`
+  - `diary_entries`
+  - `settings`
 
 ```mermaid
 erDiagram
   users {
-    int id PK
+    bigint id PK
     text passwordHash
-    text createdAt
+    timestamptz createdAt
   }
 
   tasks {
-    int id PK
+    bigint id PK
     text title
     text period
     int targetCount
-    int active
+    boolean active
     int sortOrder
-    text scheduledDate
-    text createdAt
+    date scheduledDate
+    timestamptz createdAt
   }
 
   completions {
-    int id PK
-    int taskId FK
+    bigint id PK
+    bigint taskId FK
     text titleSnapshot
-    text date
-    text createdAt
+    date date
+    timestamptz createdAt
   }
 
   calorie_entries {
-    text date PK
+    date date PK
     int calories
   }
 
   weight_entries {
-    text date PK
-    real weight
+    date date PK
+    numeric weight
   }
 
   diary_entries {
-    text date PK
+    date date PK
     text content
   }
 
@@ -183,57 +151,120 @@ erDiagram
   tasks ||--o{ completions : has
 ```
 
-### Data decisions
-- **Date keys (`yyyy-MM-dd`)** are used heavily for simple querying.
-- **Weekly aggregation** uses Monday-start week key.
-- **One-time tasks** reuse `tasks` table (`scheduledDate`) instead of separate temporary table.
-- **Migration strategy**: startup-time additive columns (`sortOrder`, `scheduledDate`) preserve old local DBs.
+## Data Reliability
+- Automated daily backups.
+- Point-in-time recovery enabled.
+- Multi-AZ standby for production resilience.
+- Periodic snapshot retention for rollback windows.
+
+## Migration Strategy
+- Use migration tooling (Prisma Migrate, Drizzle Kit, or Flyway).
+- One-time export from SQLite to PostgreSQL.
+- Validate row counts + key indexes after migration.
 
 ---
 
-## 5) Request/Interaction Architecture
+## 6) Auth & Session Architecture (Cloud)
 
-## Read path (example: Tasks page)
-1. User loads `/tasks?date=YYYY-MM-DD`.
-2. Server page fetches tasks filtered by date (`scheduledDate IS NULL OR scheduledDate = selectedDate`).
-3. Server fetches completion counts and returns hydrated model to client.
-4. Client renders reorderable task list.
+Current app auth logic (bcrypt + signed cookie) can remain, but cloud hardening is required:
 
-## Write path (example: reorder)
-1. User drags task card.
-2. Client updates local state and submits ordered IDs to `PUT /api/tasks`.
-3. API updates `sortOrder` transactionally in SQLite.
-4. Next page load preserves order.
-
-## Write path (example: one-time tomorrow task)
-1. User selects “One-time task” + “Add task for tomorrow”.
-2. Client posts to `POST /api/tasks` with `mode=one-time` and `scheduledDate=tomorrow`.
-3. Task appears only on tomorrow date view.
+- Use strong `SESSION_SECRET` from **Secrets Manager/SSM**.
+- Set cookie flags for internet deployment:
+  - `httpOnly: true`
+  - `secure: true` (HTTPS only)
+  - `sameSite: 'lax'` or `strict`
+- Rotate session secret with controlled deployment window.
+- Optional future enhancement: store server-side session records in Redis/DB for revocation.
 
 ---
 
-## 6) Security Architecture (Local Scope)
+## 7) Caching & Performance Strategy
 
-- Passwords stored as bcrypt hashes, never plaintext.
-- Session cookie is `httpOnly` and HMAC-signed.
-- Protected APIs and pages validate authentication.
-- No external APIs/services used; all data remains local.
+### CloudFront
+- Cache static assets (`/_next/static/*`) aggressively.
+- Short/controlled caching for dynamic HTML and authenticated responses.
+
+### Next.js behavior
+- Keep authenticated user pages dynamic/no-store.
+- Use server components for data shaping close to DB.
+- Optimize bundle size and chart rendering only where needed.
+
+### Database performance
+- Add indexes on common filters and joins (examples):
+  - `tasks(sortOrder, active, scheduledDate)`
+  - `completions(taskId, date)`
+  - `calorie_entries(date)` / `weight_entries(date)` / `diary_entries(date)`
 
 ---
 
-## 7) Runtime/Deployment Model
+## 8) Observability & Operations
 
-- **Runtime**: local Node.js process (`next dev` / `next start`).
-- **Persistence**: local `tracker.db` file in project directory.
-- **Network scope**: localhost usage intended.
-- **No cloud infrastructure required**.
+### Logging
+- Send app stdout/stderr to CloudWatch Logs.
+- Structured JSON logs preferred for queryability.
+
+### Metrics
+- ALB metrics: latency, 4xx/5xx, target response time.
+- ECS metrics: CPU, memory, task health.
+- RDS metrics: connections, CPU, storage, slow queries.
+
+### Alerts
+- CloudWatch alarms to SNS/Email for:
+  - ALB 5xx spikes.
+  - ECS task crash loops.
+  - RDS storage nearing threshold.
+  - elevated response latency.
+
+### Runbooks
+- Incident runbooks for DB failover, rollback, and secret rotation.
 
 ---
 
-## 8) Suggested Future Extensions (Optional)
+## 9) Cost-Aware Reference Tiers
 
-- Add soft-delete archive for tasks and restore UI.
-- Add export/import (JSON) for local backups.
-- Add stronger session expiration/rotation.
-- Add optional offline PWA mode.
-- Add automated tests for API route behavior and date logic.
+## Personal/Low Traffic (cheapest stable)
+- 1 ECS task, small Fargate size.
+- 1 RDS instance (single-AZ, automated backup).
+- CloudFront + ALB.
+
+## Production/High Availability
+- 2+ ECS tasks across AZs.
+- Multi-AZ RDS.
+- WAF, stronger alarms, automated rollback pipeline.
+
+---
+
+## 10) End-to-End Request Flow (Cloud)
+
+1. User hits domain in browser.
+2. Route 53 resolves to CloudFront.
+3. CloudFront terminates TLS with ACM cert.
+4. WAF filters malicious traffic.
+5. CloudFront forwards dynamic requests to ALB.
+6. ALB routes to healthy ECS Fargate task.
+7. Next.js page/API executes business logic.
+8. App reads/writes PostgreSQL in RDS.
+9. Response returns via ALB → CloudFront → Browser.
+10. Logs/metrics emitted to CloudWatch; alarms evaluated.
+
+---
+
+## 11) Required Code-Level Changes for AWS Move
+
+- Replace `better-sqlite3` with PostgreSQL-compatible access layer.
+- Introduce `DATABASE_URL` and secret retrieval from AWS-managed secret store.
+- Update cookie config for production HTTPS (`secure: true`).
+- Add containerization (`Dockerfile`) and runtime config.
+- Add health endpoint for ALB checks.
+- Add startup migration step in deployment workflow.
+
+---
+
+## 12) Optional Fully-Managed Alternative
+
+If you want minimal ops effort and can tolerate managed constraints:
+- Host Next.js on **AWS Amplify**.
+- Use **RDS/Aurora PostgreSQL** for data.
+- Use Secrets Manager + CloudWatch + WAF similarly.
+
+This reduces infrastructure management compared with ECS, but ECS gives finer runtime control.
