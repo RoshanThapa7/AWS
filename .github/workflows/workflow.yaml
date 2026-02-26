@@ -1,0 +1,35 @@
+name: Learn GitHub Actions with Artifacts
+
+# Controls when the workflow should run
+on:
+  push:
+    branches:
+      - main # Triggers the workflow on pushes to the main branch
+
+# A workflow run is made up of one or more jobs that run sequentially or in parallel
+jobs:
+  build:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Create a directory to store the artifact
+      - name: Create artifact directory
+        run: mkdir -p my-artifact-dir
+
+      # Create a simple text file to use as an artifact
+      - name: Generate artifact file
+        run: echo "Hello, GitHub Actions artifacts!" > my-artifact-dir/hello.txt
+
+      # Upload the created directory as an artifact
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: my-learning-artifact # The name of the artifact
+          path: my-artifact-dir/     # The path to the file or directory to upload
+          # retention-days: 1        # Optional: how long to keep the artifact (default is 90 days or repo setting)
